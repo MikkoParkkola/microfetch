@@ -93,6 +93,7 @@ url = "2"                           # URL parsing
 # ERROR HANDLING & LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
 thiserror = "2"
+async-trait = "0.1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -103,6 +104,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"], optional = true }
 http = "1.4.0"
 dirs = "6.0.0"
+rust-mcp-sdk = { version = "0.7.2", features = ["server", "macros", "stdio", "2025-06-18"] }
 
 [features]
 default = ["cli", "http3"]
@@ -119,6 +121,10 @@ tokio-test = "0.4"
 name = "microfetch"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "microfetch-mcp"
+path = "src/bin/mcp_server.rs"
 
 # Benchmarks disabled until core functionality validated
 # [[bench]]
