@@ -49,6 +49,38 @@ microfetch fingerprint -c 5
 microfetch auth https://github.com
 ```
 
+### Token-Optimized Output (LLM-friendly)
+```bash
+# Compact format: STATUS SIZE TIME
+microfetch fetch https://api.example.com --format compact
+# 200 1234B 45ms
+
+# JSON format for parsing
+microfetch fetch https://api.example.com --format json
+
+# Save full body to file (bypasses truncation)
+microfetch fetch https://example.com --output body.html
+
+# Convert HTML to markdown
+microfetch fetch https://example.com --markdown
+```
+
+### Custom Headers & Session Warmup
+```bash
+# Add custom headers (API access)
+microfetch fetch https://api.example.com \
+  --add-header "Accept: application/json" \
+  --add-header "X-Custom: value"
+
+# Auto-add Referer header
+microfetch fetch https://api.example.com --auto-referer
+
+# Warmup session first (for APIs requiring prior page load)
+microfetch fetch https://api.example.com/data \
+  --cookies brave \
+  --warmup-url https://example.com/dashboard
+```
+
 ### Get OTP Codes
 ```bash
 microfetch otp github.com
@@ -57,6 +89,24 @@ microfetch otp github.com
 ### Validate All Features
 ```bash
 microfetch validate
+```
+
+## Kauppalehti Portfolio (KL.fi)
+
+For authenticated Kauppalehti portfolio access, use the dedicated helper which handles CloudFront session requirements:
+
+```bash
+# Compact format (token-optimized for LLMs)
+kl-portfolio 471838 --format compact
+# KL:Oma salkku|€490,950|+132.2%|2026-01-21T14:02
+# HARVIA|3500|€143,850|-0.4%
+# ...
+
+# Full format with names
+kl-portfolio 471838 --format full
+
+# JSON for parsing
+kl-portfolio 471838 --format json
 ```
 
 ## Library Usage

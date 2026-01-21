@@ -1,9 +1,16 @@
-//! `MicroFetch` CLI - Test and benchmark the accelerated HTTP client
+//! `MicroFetch` CLI - Token-optimized HTTP client with SPA extraction
+//!
+//! Designed for LLM consumption: minimal tokens, maximum information.
 
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use scraper::{Html, Selector};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -11,16 +18,27 @@ use microfetch::{AcceleratedClient, CookieSource, OnePasswordAuth, OtpRetriever}
 
 #[derive(Parser)]
 #[command(name = "microfetch")]
-#[command(about = "Ultra-minimal browser engine with HTTP acceleration")]
+#[command(about = "Token-optimized HTTP client with SPA extraction")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum OutputFormat {
+    #[default]
+    /// Verbose with emojis (human-friendly)
+    Full,
+    /// Minimal: STATUS SIZE TIME (LLM-optimized)
+    Compact,
+    /// JSON output
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch a URL and display results
+    /// Fetch a URL (token-optimized output available)
     Fetch {
         /// URL to fetch
         url: String,
@@ -29,9 +47,17 @@ enum Commands {
         #[arg(short = 'H', long)]
         headers: bool,
 
-        /// Show full body (not just length)
+        /// Show body content
         #[arg(short, long)]
         body: bool,
+
+        /// Output format: full, compact, json
+        #[arg(short, long, default_value = "full")]
+        format: OutputFormat,
+
+        /// Save body to file (bypasses truncation)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
 
         /// Use cookies from browser (brave, chrome, firefox, safari)
         #[arg(short, long)]
@@ -40,6 +66,80 @@ enum Commands {
         /// Use 1Password credentials for this URL
         #[arg(long = "1password", visible_alias = "op")]
         use_1password: bool,
+
+        /// Convert HTML to markdown (strips clutter)
+        #[arg(short, long)]
+        markdown: bool,
+
+        /// Extract links only
+        #[arg(short, long)]
+        links: bool,
+
+        /// Maximum body chars to display (0=unlimited)
+        #[arg(long, default_value = "0")]
+        max_body: usize,
+
+        /// Add custom request headers (can be repeated: --add-header "Accept: application/json")
+        #[arg(long = "add-header", action = clap::ArgAction::Append)]
+        add_headers: Vec<String>,
+
+        /// Automatically add Referer header based on URL origin
+        #[arg(long)]
+        auto_referer: bool,
+
+        /// Warmup URL to fetch first (establishes session state for APIs)
+        #[arg(long)]
+        warmup_url: Option<String>,
+    },
+
+    /// Extract data from JavaScript-heavy SPA pages
+    Spa {
+        /// URL to extract data from
+        url: String,
+
+        /// Use cookies from browser (brave, chrome, firefox, safari)
+        #[arg(short, long)]
+        cookies: Option<String>,
+
+        /// Show raw HTML
+        #[arg(long)]
+        html: bool,
+
+        /// Show console output from JS execution
+        #[arg(long)]
+        console: bool,
+
+        /// API endpoint patterns to look for (comma-separated)
+        #[arg(short, long)]
+        patterns: Option<String>,
+
+        /// Output format: json or text
+        #[arg(short, long, default_value = "text")]
+        output: String,
+
+        /// Extract specific JSON path (e.g., 'props.pageProps.session')
+        #[arg(long)]
+        extract: Option<String>,
+
+        /// Show structure summary only (95%+ token savings)
+        #[arg(long)]
+        summary: bool,
+
+        /// Minify JSON output (10-30% savings)
+        #[arg(long)]
+        minify: bool,
+
+        /// Limit arrays to first N items
+        #[arg(long)]
+        max_array: Option<usize>,
+
+        /// Limit nesting depth
+        #[arg(long)]
+        max_depth: Option<usize>,
+
+        /// Force HTTP/1.1 (for servers with HTTP/2 issues)
+        #[arg(long)]
+        http1: bool,
     },
 
     /// Benchmark fetching multiple URLs
@@ -87,8 +187,67 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Fetch { url, headers, body, cookies, use_1password } => {
-            cmd_fetch(&url, headers, body, cookies.as_deref(), use_1password).await?;
+        Commands::Fetch {
+            url,
+            headers,
+            body,
+            format,
+            output,
+            cookies,
+            use_1password,
+            markdown,
+            links,
+            max_body,
+            add_headers,
+            auto_referer,
+            warmup_url,
+        } => {
+            cmd_fetch(
+                &url,
+                headers,
+                body,
+                format,
+                output,
+                cookies.as_deref(),
+                use_1password,
+                markdown,
+                links,
+                max_body,
+                &add_headers,
+                auto_referer,
+                warmup_url.as_deref(),
+            )
+            .await?;
+        }
+        Commands::Spa {
+            url,
+            cookies,
+            html,
+            console,
+            patterns,
+            output,
+            extract,
+            summary,
+            minify,
+            max_array,
+            max_depth,
+            http1,
+        } => {
+            cmd_spa(
+                &url,
+                cookies.as_deref(),
+                html,
+                console,
+                patterns.as_deref(),
+                &output,
+                extract.as_deref(),
+                summary,
+                minify,
+                max_array,
+                max_depth,
+                http1,
+            )
+            .await?;
         }
         Commands::Bench { urls, iterations } => {
             cmd_bench(&urls, iterations).await?;
@@ -110,12 +269,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_fetch(url: &str, show_headers: bool, show_body: bool, cookies: Option<&str>, use_1password: bool) -> Result<()> {
+async fn cmd_fetch(
+    url: &str,
+    show_headers: bool,
+    show_body: bool,
+    format: OutputFormat,
+    output_file: Option<PathBuf>,
+    cookies: Option<&str>,
+    use_1password: bool,
+    markdown: bool,
+    links: bool,
+    max_body: usize,
+    custom_headers: &[String],
+    auto_referer: bool,
+    warmup_url: Option<&str>,
+) -> Result<()> {
     let client = AcceleratedClient::new()?;
     let profile = client.profile().await;
-
-    println!("🌐 Fetching: {url}");
-    println!("🎭 User-Agent: {}", profile.user_agent);
 
     // Extract domain from URL
     let domain = url::Url::parse(url)
@@ -131,39 +301,298 @@ async fn cmd_fetch(url: &str, show_headers: bool, show_body: bool, cookies: Opti
             "chrome" => CookieSource::Chrome,
             "firefox" => CookieSource::Firefox,
             "safari" => CookieSource::Safari,
-            _ => {
-                println!("⚠️  Unknown browser: {browser}, using Brave");
-                CookieSource::Brave
-            }
+            _ => CookieSource::Brave,
         };
         cookie_header = source.get_cookie_header(&domain).unwrap_or_default();
-        if !cookie_header.is_empty() {
-            println!("🍪 Loaded {} cookies from {browser}", cookie_header.matches('=').count());
+    }
+
+    // Handle 1Password
+    if use_1password && OnePasswordAuth::is_available() {
+        let auth = OnePasswordAuth::new(None);
+        if let Ok(Some(cred)) = auth.get_credential_for_url(url) {
+            if matches!(format, OutputFormat::Full) {
+                println!("🔐 Found 1Password: {}", cred.title);
+            }
         }
     }
 
-    // Get 1Password credentials if requested
-    if use_1password {
-        if OnePasswordAuth::is_available() {
-            let auth = OnePasswordAuth::new(None);
-            if let Ok(Some(cred)) = auth.get_credential_for_url(url) {
-                println!("🔐 Found 1Password: {}", cred.title);
-                if cred.has_totp {
-                    println!("   TOTP available");
-                }
-            }
-        } else {
-            println!("⚠️  1Password CLI not available");
+    // Session warmup (for APIs that require prior page load)
+    if let Some(warmup) = warmup_url {
+        if matches!(format, OutputFormat::Full) {
+            println!("🔥 Warming up session: {warmup}");
         }
+        let mut warmup_req = client.inner().get(warmup);
+        warmup_req = warmup_req.headers(profile.to_headers());
+        if !cookie_header.is_empty() {
+            warmup_req = warmup_req.header("Cookie", &cookie_header);
+        }
+        let _ = warmup_req.send().await; // Ignore result, just establish session
     }
 
     let start = Instant::now();
 
-    // Build request with cookies
+    // Build request with all headers
+    let mut request = client.inner().get(url);
+
+    // Add fingerprint headers
+    request = request.headers(profile.to_headers());
+
+    // Add cookies if present
+    if !cookie_header.is_empty() {
+        request = request.header("Cookie", &cookie_header);
+    }
+
+    // Add auto-referer if requested (domain origin)
+    if auto_referer {
+        if let Ok(parsed) = url::Url::parse(url) {
+            let referer = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
+            request = request.header("Referer", referer);
+        }
+    }
+
+    // Add custom headers (--add-header "Name: Value")
+    for header_str in custom_headers {
+        let parts: Vec<&str> = header_str.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            request = request.header(parts[0].trim(), parts[1].trim());
+        }
+    }
+
+    let response = request.send().await?;
+
+    let elapsed = start.elapsed();
+    let status = response.status();
+    let version = response.version();
+
+    // Output based on format
+    match format {
+        OutputFormat::Compact => {
+            // Minimal: STATUS SIZE TIME
+            let body_text = response.text().await?;
+            let body_len = body_text.len();
+            println!("{} {}B {:.0}ms", status.as_u16(), body_len, elapsed.as_secs_f64() * 1000.0);
+
+            if show_body || output_file.is_some() || markdown || links {
+                output_body(&body_text, output_file, markdown, links, max_body)?;
+            }
+        }
+        OutputFormat::Json => {
+            let body_text = response.text().await?;
+            let output = serde_json::json!({
+                "status": status.as_u16(),
+                "size": body_text.len(),
+                "time_ms": elapsed.as_secs_f64() * 1000.0,
+                "url": url,
+            });
+            println!("{}", serde_json::to_string(&output)?);
+
+            if let Some(path) = output_file {
+                let mut file = File::create(&path)?;
+                file.write_all(body_text.as_bytes())?;
+            }
+        }
+        OutputFormat::Full => {
+            println!("🌐 Fetching: {url}");
+            println!("🎭 User-Agent: {}", profile.user_agent);
+
+            if !cookie_header.is_empty() {
+                println!(
+                    "🍪 Loaded {} cookies from {}",
+                    cookie_header.matches('=').count(),
+                    cookies.unwrap_or("browser")
+                );
+            }
+
+            println!("\n📊 Response:");
+            println!("   Status: {status}");
+            println!("   Version: {version:?}");
+            println!("   Time: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+
+            if show_headers {
+                println!("\n📋 Headers:");
+                for (name, value) in response.headers() {
+                    println!("   {}: {}", name, value.to_str().unwrap_or("<binary>"));
+                }
+            }
+
+            let body_text = response.text().await?;
+            println!("\n📄 Body: {} bytes", body_text.len());
+
+            if show_body || output_file.is_some() || markdown || links {
+                output_body(&body_text, output_file, markdown, links, max_body)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn output_body(
+    body: &str,
+    output_file: Option<PathBuf>,
+    markdown: bool,
+    links: bool,
+    max_body: usize,
+) -> Result<()> {
+    // Save to file if requested (always full, no truncation)
+    if let Some(path) = output_file {
+        let mut file = File::create(&path)?;
+        if markdown {
+            let md = html_to_markdown(body);
+            file.write_all(md.as_bytes())?;
+        } else {
+            file.write_all(body.as_bytes())?;
+        }
+        println!("💾 Saved {} bytes to {}", body.len(), path.display());
+        return Ok(());
+    }
+
+    // Extract links if requested
+    if links {
+        let extracted = extract_links(body);
+        for (text, href) in &extracted {
+            if text.is_empty() {
+                println!("{href}");
+            } else {
+                println!("[{}]({href})", truncate_text(text, 50));
+            }
+        }
+        println!("\n({} links)", extracted.len());
+        return Ok(());
+    }
+
+    // Convert to markdown if requested
+    let output = if markdown {
+        html_to_markdown(body)
+    } else {
+        body.to_string()
+    };
+
+    // Display with optional limit
+    let limit = if max_body == 0 { output.len() } else { max_body };
+    if output.len() > limit {
+        println!("\n{}", &output[..limit]);
+        println!("\n... [{} more bytes]", output.len() - limit);
+    } else {
+        println!("\n{output}");
+    }
+
+    Ok(())
+}
+
+fn html_to_markdown(html: &str) -> String {
+    // Use html2md for conversion
+    let md = html2md::parse_html(html);
+
+    // Post-process: remove excessive whitespace and clutter
+    let lines: Vec<&str> = md
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| !is_boilerplate(l))
+        .collect();
+
+    lines.join("\n")
+}
+
+fn is_boilerplate(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Skip common navigation/boilerplate patterns
+    lower.contains("skip to content")
+        || lower.contains("cookie")
+        || lower.contains("privacy policy")
+        || lower.contains("terms of service")
+        || lower.starts_with("©")
+        || lower.starts_with("copyright")
+        || (lower.len() < 3 && !lower.chars().any(char::is_alphanumeric))
+}
+
+fn extract_links(html: &str) -> Vec<(String, String)> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("a[href]").unwrap();
+
+    let mut links = Vec::new();
+    let mut seen = HashSet::new();
+
+    for element in document.select(&selector) {
+        if let Some(href) = element.value().attr("href") {
+            // Skip anchors, javascript, and duplicates
+            if href.starts_with('#') || href.starts_with("javascript:") || seen.contains(href) {
+                continue;
+            }
+            seen.insert(href.to_string());
+
+            let text = element
+                .text()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string();
+
+            links.push((text, href.to_string()));
+        }
+    }
+
+    links
+}
+
+fn truncate_text(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        text.to_string()
+    } else {
+        format!("{}...", &text[..max - 3])
+    }
+}
+
+async fn cmd_spa(
+    url: &str,
+    cookies: Option<&str>,
+    _show_html: bool,
+    _show_console: bool,
+    _patterns: Option<&str>,
+    output: &str,
+    extract_path: Option<&str>,
+    summary: bool,
+    minify: bool,
+    max_array: Option<usize>,
+    max_depth: Option<usize>,
+    _http1: bool,
+) -> Result<()> {
+    let client = AcceleratedClient::new()?;
+
+    // Extract domain from URL
+    let domain = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
+        .unwrap_or_default();
+
+    // Get cookies if requested
+    let mut cookie_header = String::new();
+    if let Some(browser) = cookies {
+        let source = match browser.to_lowercase().as_str() {
+            "brave" => CookieSource::Brave,
+            "chrome" => CookieSource::Chrome,
+            "firefox" => CookieSource::Firefox,
+            "safari" => CookieSource::Safari,
+            _ => CookieSource::Brave,
+        };
+        cookie_header = source.get_cookie_header(&domain).unwrap_or_default();
+        if !cookie_header.is_empty() {
+            println!(
+                "🍪 Loading {} cookies for {domain}",
+                browser.to_lowercase()
+            );
+        }
+    }
+
+    let profile = client.profile().await;
+    let start = Instant::now();
+
     let response = if cookie_header.is_empty() {
         client.fetch(url).await?
     } else {
-        client.inner()
+        client
+            .inner()
             .get(url)
             .header("Cookie", &cookie_header)
             .headers(profile.to_headers())
@@ -171,31 +600,251 @@ async fn cmd_fetch(url: &str, show_headers: bool, show_body: bool, cookies: Opti
             .await?
     };
 
+    let html = response.text().await?;
     let elapsed = start.elapsed();
 
-    println!("\n📊 Response:");
-    println!("   Status: {}", response.status());
-    println!("   Version: {:?}", response.version());
-    println!("   Time: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+    println!("🕸️  Extracting SPA data from: {url}");
 
-    if show_headers {
-        println!("\n📋 Headers:");
-        for (name, value) in response.headers() {
-            println!("   {}: {}", name, value.to_str().unwrap_or("<binary>"));
-        }
+    // Look for common SPA data patterns
+    let mut found_data = false;
+
+    // __NEXT_DATA__ (Next.js)
+    if let Some(data) = extract_script_json(&html, "__NEXT_DATA__") {
+        println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+        println!("\n✅ __NEXT_DATA__ found:");
+        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+        found_data = true;
     }
 
-    let body = response.text().await?;
-    println!("\n📄 Body: {} bytes", body.len());
-
-    if show_body {
-        println!("\n{}", &body[..body.len().min(2000)]);
-        if body.len() > 2000 {
-            println!("\n... [truncated]");
+    // __INITIAL_STATE__ (Redux, Vuex)
+    if let Some(data) = extract_script_json(&html, "__INITIAL_STATE__") {
+        if !found_data {
+            println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
         }
+        println!("\n✅ __INITIAL_STATE__ found:");
+        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+        found_data = true;
+    }
+
+    // __NUXT__ (Nuxt.js)
+    if let Some(data) = extract_script_json(&html, "__NUXT__") {
+        if !found_data {
+            println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+        }
+        println!("\n✅ __NUXT__ found:");
+        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+        found_data = true;
+    }
+
+    // __PRELOADED_STATE__ (common Redux pattern)
+    if let Some(data) = extract_script_json(&html, "__PRELOADED_STATE__") {
+        if !found_data {
+            println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+        }
+        println!("\n✅ __PRELOADED_STATE__ found:");
+        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+        found_data = true;
+    }
+
+    if !found_data {
+        println!("\n❌ No SPA data found (__NEXT_DATA__, __INITIAL_STATE__, etc.)");
+        println!("   HTML size: {} bytes", html.len());
+        println!("   This may be a server-rendered page or data loads via AJAX.");
     }
 
     Ok(())
+}
+
+fn extract_script_json(html: &str, var_name: &str) -> Option<serde_json::Value> {
+    // Pattern: window.__VAR__ = {...} or <script id="__VAR__">...</script>
+    let document = Html::parse_document(html);
+
+    // Try script tag with id
+    let id_selector = Selector::parse(&format!("script#{var_name}")).ok()?;
+    if let Some(script) = document.select(&id_selector).next() {
+        let content = script.text().collect::<String>();
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            return Some(json);
+        }
+    }
+
+    // Try window.__VAR__ = pattern
+    let pattern = format!("window.{var_name}");
+    if let Some(start_idx) = html.find(&pattern) {
+        let after_eq = html[start_idx..].find('=')? + start_idx + 1;
+        let json_start = html[after_eq..].chars().position(|c| c == '{' || c == '[')? + after_eq;
+
+        // Find matching bracket
+        let json_str = extract_json_object(&html[json_start..])?;
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+            return Some(json);
+        }
+    }
+
+    // Try self.__VAR__ pattern (some frameworks)
+    let self_pattern = format!("self.{var_name}");
+    if let Some(start_idx) = html.find(&self_pattern) {
+        let after_eq = html[start_idx..].find('=')? + start_idx + 1;
+        let json_start = html[after_eq..].chars().position(|c| c == '{' || c == '[')? + after_eq;
+        let json_str = extract_json_object(&html[json_start..])?;
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+            return Some(json);
+        }
+    }
+
+    None
+}
+
+fn extract_json_object(s: &str) -> Option<&str> {
+    let first_char = s.chars().next()?;
+    let (open, close) = match first_char {
+        '{' => ('{', '}'),
+        '[' => ('[', ']'),
+        _ => return None,
+    };
+
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, c) in s.chars().enumerate() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        match c {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            c if c == open => depth += 1,
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn output_spa_data(
+    data: &serde_json::Value,
+    output: &str,
+    extract_path: Option<&str>,
+    summary: bool,
+    minify: bool,
+    max_array: Option<usize>,
+    max_depth: Option<usize>,
+) -> Result<()> {
+    // Extract specific path if requested
+    let target = if let Some(path) = extract_path {
+        let parts: Vec<&str> = path.split('.').collect();
+        let mut current = data;
+        for part in parts {
+            current = current.get(part).unwrap_or(&serde_json::Value::Null);
+        }
+        current.clone()
+    } else {
+        data.clone()
+    };
+
+    // Apply transformations
+    let transformed = if max_array.is_some() || max_depth.is_some() {
+        transform_json(&target, max_array.unwrap_or(usize::MAX), max_depth.unwrap_or(usize::MAX), 0)
+    } else {
+        target
+    };
+
+    // Output
+    if summary {
+        println!("   {} bytes", serde_json::to_string(&transformed)?.len());
+        print_structure(&transformed, 3, 0);
+    } else if output == "json" || minify {
+        if minify {
+            println!("{}", serde_json::to_string(&transformed)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&transformed)?);
+        }
+    } else {
+        println!("{}", serde_json::to_string_pretty(&transformed)?);
+    }
+
+    Ok(())
+}
+
+fn transform_json(value: &serde_json::Value, max_array: usize, max_depth: usize, depth: usize) -> serde_json::Value {
+    if depth >= max_depth {
+        return serde_json::Value::String("[depth limit]".to_string());
+    }
+
+    match value {
+        serde_json::Value::Array(arr) => {
+            let limited: Vec<serde_json::Value> = arr
+                .iter()
+                .take(max_array)
+                .map(|v| transform_json(v, max_array, max_depth, depth + 1))
+                .collect();
+            if arr.len() > max_array {
+                let mut result = limited;
+                result.push(serde_json::Value::String(format!("... +{} more", arr.len() - max_array)));
+                serde_json::Value::Array(result)
+            } else {
+                serde_json::Value::Array(limited)
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            let transformed: serde_json::Map<String, serde_json::Value> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), transform_json(v, max_array, max_depth, depth + 1)))
+                .collect();
+            serde_json::Value::Object(transformed)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn print_structure(value: &serde_json::Value, max_depth: usize, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    if depth >= max_depth {
+        println!("{indent}...");
+        return;
+    }
+
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, val) in obj {
+                match val {
+                    serde_json::Value::Object(_) => {
+                        println!("{indent}{key}: {{...}}");
+                        print_structure(val, max_depth, depth + 1);
+                    }
+                    serde_json::Value::Array(arr) => {
+                        println!("{indent}{key}: [{} items]", arr.len());
+                    }
+                    _ => {
+                        let type_name = match val {
+                            serde_json::Value::String(_) => "string",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Bool(_) => "bool",
+                            serde_json::Value::Null => "null",
+                            _ => "?",
+                        };
+                        println!("{indent}{key}: {type_name}");
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(arr) if !arr.is_empty() => {
+            println!("{indent}[0]:");
+            print_structure(&arr[0], max_depth, depth + 1);
+        }
+        _ => {}
+    }
 }
 
 async fn cmd_bench(urls: &str, iterations: usize) -> Result<()> {

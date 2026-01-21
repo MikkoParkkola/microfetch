@@ -500,10 +500,9 @@ impl CookieSource {
     pub fn get_cookies(&self, domain: &str) -> Result<HashMap<String, String>> {
         debug!("Getting cookies for {} from {:?}", domain, self);
 
-        // For Firefox and Safari, fall back to Python method for now
-        if matches!(self, CookieSource::Firefox | CookieSource::Safari) {
-            return self.get_cookies_via_python(domain);
-        }
+        // Use Python browser_cookie3 for all browsers - it handles encrypted cookies properly
+        // Native Rust decryption not implemented yet (requires AES-128-CBC with PBKDF2)
+        return self.get_cookies_via_python(domain);
 
         let cookie_path = self
             .cookie_path()
