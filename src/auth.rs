@@ -64,6 +64,8 @@ pub struct Credential {
 struct OpItem {
     id: String,
     title: String,
+    /// Category field from 1Password API - retained for serde completeness but not currently used
+    #[allow(dead_code)]
     category: String,
     urls: Option<Vec<OpUrl>>,
     fields: Option<Vec<OpField>>,
@@ -496,14 +498,33 @@ impl CookieSource {
 
     /// Get cookies for a domain from the specified browser
     ///
-    /// Directly reads browser's `SQLite` cookie database on macOS
+    /// Tries native Rust extraction first, falls back to Python `browser_cookie3`
     pub fn get_cookies(&self, domain: &str) -> Result<HashMap<String, String>> {
         debug!("Getting cookies for {} from {:?}", domain, self);
 
-        // Use Python browser_cookie3 for all browsers - it handles encrypted cookies properly
-        // Native Rust decryption not implemented yet (requires AES-128-CBC with PBKDF2)
-        return self.get_cookies_via_python(domain);
+        // Try native Rust extraction first
+        match self.get_cookies_native(domain) {
+            Ok(cookies) if !cookies.is_empty() => {
+                info!(
+                    "Native cookie extraction succeeded: {} cookies",
+                    cookies.len()
+                );
+                return Ok(cookies);
+            }
+            Ok(_) => {
+                debug!("Native extraction returned empty, trying Python fallback");
+            }
+            Err(e) => {
+                debug!("Native extraction failed: {}, trying Python fallback", e);
+            }
+        }
 
+        // Fallback to Python browser_cookie3 (handles all encryption edge cases)
+        self.get_cookies_via_python(domain)
+    }
+
+    /// Native Rust cookie extraction - tries to extract cookies without Python dependency
+    fn get_cookies_native(&self, domain: &str) -> Result<HashMap<String, String>> {
         let cookie_path = self
             .cookie_path()
             .context("Could not determine cookie path")?;
@@ -561,14 +582,15 @@ impl CookieSource {
 
                 // If value is empty and we have encrypted_value, try to decrypt
                 if value.is_empty() && parts.len() >= 3 && key.is_some() {
-                    // Encrypted values need decryption - fall back to Python for now
-                    // (Rust AES decryption would add dependencies)
+                    // Try native decryption - if it fails, we'll fall back to Python at the caller
                     if let Ok(decrypted) =
                         self.decrypt_cookie_value(parts[2], key.as_ref().unwrap())
                     {
                         cookies.insert(name, decrypted);
                         continue;
                     }
+                    // If decryption fails, return error to trigger Python fallback
+                    anyhow::bail!("Cookie decryption failed for encrypted values");
                 }
 
                 if !value.is_empty() {
@@ -577,7 +599,11 @@ impl CookieSource {
             }
         }
 
-        info!("Extracted {} cookies for {}", cookies.len(), domain);
+        info!(
+            "Native extraction: {} cookies for {}",
+            cookies.len(),
+            domain
+        );
         Ok(cookies)
     }
 

@@ -9,6 +9,8 @@ use tracing::debug;
 
 /// Minimal JavaScript engine for executing scripts
 pub struct JsEngine {
+    /// Runtime must be kept alive for Context lifetime - not directly used after initialization
+    #[allow(dead_code)]
     runtime: Runtime,
     context: Context,
 }

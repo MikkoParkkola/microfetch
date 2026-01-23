@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Ultra-minimal browser engine with JS support, HTTP/3, cookie auth, passkeys, and anti-fingerprinting"
 license = "MIT"
-rust-version = "1.75"
+rust-version = "1.93"
 
 [dependencies]
 # ═══════════════════════════════════════════════════════════════════════════════
