@@ -90,6 +90,22 @@ enum Commands {
         /// Warmup URL to fetch first (establishes session state for APIs)
         #[arg(long)]
         warmup_url: Option<String>,
+
+        /// HTTP method (GET, POST, PUT, DELETE, PATCH)
+        #[arg(short = 'X', long, default_value = "GET")]
+        method: String,
+
+        /// Request body data (for POST/PUT/PATCH)
+        #[arg(short = 'd', long)]
+        data: Option<String>,
+
+        /// Output Set-Cookie headers from response (for auth flows)
+        #[arg(long)]
+        capture_cookies: bool,
+
+        /// Don't follow redirects (capture 302 response directly)
+        #[arg(long)]
+        no_redirect: bool,
     },
 
     /// Extract data from JavaScript-heavy SPA pages
@@ -201,6 +217,10 @@ async fn main() -> Result<()> {
             add_headers,
             auto_referer,
             warmup_url,
+            method,
+            data,
+            capture_cookies,
+            no_redirect,
         } => {
             cmd_fetch(
                 &url,
@@ -216,6 +236,10 @@ async fn main() -> Result<()> {
                 &add_headers,
                 auto_referer,
                 warmup_url.as_deref(),
+                &method,
+                data.as_deref(),
+                capture_cookies,
+                no_redirect,
             )
             .await?;
         }
@@ -283,8 +307,17 @@ async fn cmd_fetch(
     custom_headers: &[String],
     auto_referer: bool,
     warmup_url: Option<&str>,
+    method: &str,
+    data: Option<&str>,
+    capture_cookies: bool,
+    no_redirect: bool,
 ) -> Result<()> {
-    let client = AcceleratedClient::new()?;
+    // Create client - with or without redirect following
+    let client = if no_redirect {
+        AcceleratedClient::new_no_redirect()?
+    } else {
+        AcceleratedClient::new()?
+    };
     let profile = client.profile().await;
 
     // Extract domain from URL
@@ -331,8 +364,24 @@ async fn cmd_fetch(
 
     let start = Instant::now();
 
-    // Build request with all headers
-    let mut request = client.inner().get(url);
+    // Build request based on HTTP method
+    let mut request = match method.to_uppercase().as_str() {
+        "POST" => client.inner().post(url),
+        "PUT" => client.inner().put(url),
+        "PATCH" => client.inner().patch(url),
+        "DELETE" => client.inner().delete(url),
+        "HEAD" => client.inner().head(url),
+        _ => client.inner().get(url),
+    };
+
+    // Add request body for methods that support it
+    if let Some(body_data) = data {
+        request = request.body(body_data.to_owned());
+        // Default to JSON content type if not specified
+        if !custom_headers.iter().any(|h| h.to_lowercase().starts_with("content-type")) {
+            request = request.header("Content-Type", "application/json");
+        }
+    }
 
     // Add fingerprint headers
     request = request.headers(profile.to_headers());
@@ -363,6 +412,25 @@ async fn cmd_fetch(
     let elapsed = start.elapsed();
     let status = response.status();
     let version = response.version();
+
+    // Extract Set-Cookie headers before consuming response
+    let set_cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+
+    // Output Set-Cookie headers if requested (for auth flows)
+    if capture_cookies && !set_cookies.is_empty() {
+        println!("🍪 Set-Cookie:");
+        for cookie in &set_cookies {
+            // Parse cookie to extract name=value
+            if let Some(name_value) = cookie.split(';').next() {
+                println!("   {name_value}");
+            }
+        }
+    }
 
     // Output based on format
     match format {

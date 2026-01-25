@@ -125,6 +125,36 @@ impl AcceleratedClient {
         })
     }
 
+    /// Create client that doesn't follow redirects (for auth flows)
+    pub fn new_no_redirect() -> Result<Self> {
+        let profile = random_profile();
+        let headers = profile.to_headers();
+
+        let client = Client::builder()
+            .http2_adaptive_window(true)
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_nodelay(true)
+            .use_rustls_tls()
+            .brotli(true)
+            .zstd(true)
+            .gzip(true)
+            .deflate(true)
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            // No redirects - capture 302 responses directly
+            .redirect(reqwest::redirect::Policy::none())
+            .cookie_store(true)
+            .build()?;
+
+        Ok(Self {
+            client,
+            profile: Arc::new(RwLock::new(profile)),
+        })
+    }
+
     /// Fetch a URL with all accelerations
     #[instrument(skip(self), fields(url = %url))]
     pub async fn fetch(&self, url: &str) -> Result<Response> {
