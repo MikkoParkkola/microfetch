@@ -84,7 +84,7 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Use cookies from browser (brave, chrome, firefox, safari)
+        /// Use cookies from browser (auto, brave, chrome, firefox, safari, edge)
         #[arg(short, long)]
         cookies: Option<String>,
 
@@ -138,7 +138,7 @@ enum Commands {
         /// URL to extract data from
         url: String,
 
-        /// Use cookies from browser (brave, chrome, firefox, safari)
+        /// Use cookies from browser (auto, brave, chrome, firefox, safari, edge)
         #[arg(short, long)]
         cookies: Option<String>,
 
@@ -251,7 +251,7 @@ enum Commands {
         #[arg(long)]
         list: bool,
 
-        /// Use cookies from browser
+        /// Use cookies from browser (auto, brave, chrome, firefox, safari, edge)
         #[arg(short, long)]
         cookies: Option<String>,
 
@@ -535,17 +535,37 @@ async fn cmd_fetch(
         .and_then(|u| u.host_str().map(std::string::ToString::to_string))
         .unwrap_or_default();
 
-    // Get cookies if requested
+    // Get cookies if requested or auto-detect
     let mut cookie_header = String::new();
-    if let Some(browser) = cookies {
+    let browser_name = if let Some(browser_arg) = cookies {
+        // User specified a browser
+        if browser_arg.to_lowercase() == "auto" {
+            // Auto-detect
+            if let Ok(detected) = microfetch::detect_default_browser() {
+                Some(detected.as_str().to_string())
+            } else {
+                Some("chrome".to_string()) // fallback
+            }
+        } else {
+            Some(browser_arg.to_string())
+        }
+    } else {
+        None
+    };
+
+    if let Some(browser) = &browser_name {
         let source = match browser.to_lowercase().as_str() {
             "brave" => CookieSource::Brave,
             "chrome" => CookieSource::Chrome,
             "firefox" => CookieSource::Firefox,
             "safari" => CookieSource::Safari,
-            _ => CookieSource::Brave,
+            "edge" => CookieSource::Chrome, // Edge uses Chromium cookie format
+            _ => CookieSource::Chrome, // Default to Chrome
         };
         cookie_header = source.get_cookie_header(&domain).unwrap_or_default();
+        if !cookie_header.is_empty() && matches!(format, OutputFormat::Full) {
+            println!("🍪 Loading {} cookies for {domain}", browser.to_lowercase());
+        }
     }
 
     // Handle 1Password
@@ -844,15 +864,32 @@ async fn cmd_spa(
         .and_then(|u| u.host_str().map(std::string::ToString::to_string))
         .unwrap_or_default();
 
-    // Get cookies if requested
+    // Get cookies if requested or auto-detect
     let mut cookie_header = String::new();
-    if let Some(browser) = cookies {
+    let browser_name = if let Some(browser_arg) = cookies {
+        // User specified a browser
+        if browser_arg.to_lowercase() == "auto" {
+            // Auto-detect
+            if let Ok(detected) = microfetch::detect_default_browser() {
+                Some(detected.as_str().to_string())
+            } else {
+                Some("chrome".to_string()) // fallback
+            }
+        } else {
+            Some(browser_arg.to_string())
+        }
+    } else {
+        None
+    };
+
+    if let Some(browser) = browser_name {
         let source = match browser.to_lowercase().as_str() {
             "brave" => CookieSource::Brave,
             "chrome" => CookieSource::Chrome,
             "firefox" => CookieSource::Firefox,
             "safari" => CookieSource::Safari,
-            _ => CookieSource::Brave,
+            "edge" => CookieSource::Chrome, // Edge uses Chromium cookie format
+            _ => CookieSource::Chrome, // Default to Chrome
         };
         cookie_header = source.get_cookie_header(&domain).unwrap_or_default();
         if !cookie_header.is_empty() {
@@ -1690,15 +1727,32 @@ async fn cmd_stream(
         }
     }
 
-    // Extract cookies from browser if specified
-    if let Some(browser) = cookies {
+    // Extract cookies from browser if specified or auto-detect
+    let browser_name = if let Some(browser_arg) = cookies {
+        // User specified a browser
+        if browser_arg.to_lowercase() == "auto" {
+            // Auto-detect
+            if let Ok(detected) = microfetch::detect_default_browser() {
+                Some(detected.as_str().to_string())
+            } else {
+                Some("chrome".to_string()) // fallback
+            }
+        } else {
+            Some(browser_arg.to_string())
+        }
+    } else {
+        None
+    };
+
+    if let Some(browser) = browser_name {
         eprintln!("🍪 Extracting cookies from {browser}...");
         let cookie_source = match browser.to_lowercase().as_str() {
             "brave" => CookieSource::Brave,
             "chrome" => CookieSource::Chrome,
             "firefox" => CookieSource::Firefox,
             "safari" => CookieSource::Safari,
-            _ => CookieSource::Brave,
+            "edge" => CookieSource::Chrome, // Edge uses Chromium cookie format
+            _ => CookieSource::Chrome, // Default to Chrome
         };
 
         // Get Yle cookies
