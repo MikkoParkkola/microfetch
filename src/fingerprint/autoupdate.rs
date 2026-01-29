@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const UPDATE_THRESHOLD_DAYS: i64 = 30;
+const UPDATE_THRESHOLD_DAYS: i64 = 14; // Chrome releases every 4 weeks, check every 2 weeks
 const SAFARI_STALE_THRESHOLD_DAYS: i64 = 180; // Safari updates quarterly
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -25,7 +25,7 @@ impl BrowserVersions {
 
         // Try to load existing config
         if let Ok(config) = Self::load_from_file(&config_path) {
-            // Check if stale (>30 days old)
+            // Check if stale (>14 days old to match Chrome release cycle)
             if config.is_stale() {
                 eprintln!(
                     "🔄 Browser versions outdated ({} days old), updating...",
@@ -90,14 +90,30 @@ impl BrowserVersions {
     }
 
     fn fetch_and_update(&self) -> Result<Self, Box<dyn std::error::Error>> {
+        // Determine cache severity level for better observability
+        let cache_age_days = (Utc::now() - self.last_updated).num_days();
+        let severity = if cache_age_days > 60 {
+            ("🔴 ERROR", "CRITICAL") // >2 months = critical
+        } else if cache_age_days > 14 {
+            ("⚠️  WARN", "Degraded") // >2 weeks = degraded
+        } else {
+            ("ℹ️  INFO", "Normal")
+        };
+
         // Fetch Chrome and Firefox (auto-update)
         let chrome = Self::fetch_chrome_versions().unwrap_or_else(|e| {
-            eprintln!("⚠️  Chrome update failed ({e}), using cached");
+            eprintln!(
+                "{} Chrome update failed ({e}), using {}-day-old cache",
+                severity.0, cache_age_days
+            );
             self.chrome.clone()
         });
 
         let firefox = Self::fetch_firefox_versions().unwrap_or_else(|e| {
-            eprintln!("⚠️  Firefox update failed ({e}), using cached");
+            eprintln!(
+                "{} Firefox update failed ({e}), using {}-day-old cache",
+                severity.0, cache_age_days
+            );
             self.firefox.clone()
         });
 
