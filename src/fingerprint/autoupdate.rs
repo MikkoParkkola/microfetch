@@ -123,33 +123,33 @@ impl BrowserVersions {
     }
 
     fn fetch_chrome_versions() -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-        // Google's official Chrome version API (replaced defunct Omahaproxy)
-        let url = "https://versionhistory.googleapis.com/v1/chrome/platforms/mac/channels/stable/versions/all/releases?filter=endtime=none";
+        // Google's official Chrome version API - use "all" platforms for better coverage
+        // macOS-only endpoint returns only 2 versions; all-platforms gives 8-10
+        let url = "https://versionhistory.googleapis.com/v1/chrome/platforms/all/channels/stable/versions";
 
-        eprintln!("🔍 Fetching Chrome versions...");
-        let resp: serde_json::Value = reqwest::blocking::get(url)?.error_for_status()?.json()?;
+        let resp: serde_json::Value = Self::fetch_with_retry(url, 3)?;
 
         let mut versions = Vec::new();
-        if let Some(releases) = resp["releases"].as_array() {
-            eprintln!("   Found {} releases in API response", releases.len());
-            for release in releases {
-                if let Some(full) = release["version"].as_str() {
+        if let Some(versions_array) = resp["versions"].as_array() {
+            for ver in versions_array {
+                if let Some(full) = ver["version"].as_str() {
                     let major = full.split('.').next().unwrap_or("0");
-                    versions.push((major.to_string(), format!("{major}.0.0.0")));
+                    // Store full patch version for better authenticity
+                    versions.push((major.to_string(), full.to_string()));
                 }
             }
         } else {
-            return Err("No 'releases' array in API response".into());
+            return Err("No 'versions' array in API response".into());
         }
 
-        // Deduplicate and keep latest 5
+        // Deduplicate by major version and keep latest 8 for better rotation diversity
         versions.sort_by(|a, b| {
             b.0.parse::<u32>()
                 .unwrap_or(0)
                 .cmp(&a.0.parse::<u32>().unwrap_or(0))
         });
         versions.dedup_by(|a, b| a.0 == b.0);
-        versions.truncate(5);
+        versions.truncate(8);
 
         if versions.is_empty() {
             return Err("No Chrome versions found".into());
@@ -164,9 +164,39 @@ impl BrowserVersions {
         Ok(versions)
     }
 
+    /// Fetch URL with retry logic (exponential backoff: 50ms, 200ms, 800ms)
+    fn fetch_with_retry(
+        url: &str,
+        max_retries: u32,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut last_error = None;
+
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                let delay_ms = 50 * (4_u64.pow(attempt - 1)); // 50, 200, 800ms
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+
+            match reqwest::blocking::get(url) {
+                Ok(resp) => match resp.error_for_status() {
+                    Ok(resp) => match resp.json::<serde_json::Value>() {
+                        Ok(json) => return Ok(json),
+                        Err(e) => last_error = Some(format!("JSON parse error: {e}")),
+                    },
+                    Err(e) => last_error = Some(format!("HTTP error: {e}")),
+                },
+                Err(e) => last_error = Some(format!("Network error: {e}")),
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| "Unknown error".to_string())
+            .into())
+    }
+
     fn fetch_firefox_versions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let url = "https://product-details.mozilla.org/1.0/firefox_versions.json";
-        let resp: serde_json::Value = reqwest::blocking::get(url)?.error_for_status()?.json()?;
+        let resp = Self::fetch_with_retry(url, 3)?;
 
         let latest = resp["LATEST_FIREFOX_VERSION"]
             .as_str()
@@ -176,8 +206,8 @@ impl BrowserVersions {
             .ok_or("Invalid version format")?
             .parse::<u32>()?;
 
-        // Generate last 4 versions
-        let versions: Vec<String> = (0..4)
+        // Generate last 6 versions for better rotation diversity
+        let versions: Vec<String> = (0..6)
             .map(|i| format!("{}.0", latest.saturating_sub(i)))
             .collect();
 
