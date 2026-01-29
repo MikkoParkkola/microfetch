@@ -1067,8 +1067,9 @@ async fn cmd_spa(
             if base_url.is_empty() { None } else { Some(base_url.clone()) }
         );
 
-        // Inject fetch() bridge into JS context
-        inject_fetch_sync(js_engine.context(), fetch_client)?;
+        // Inject fetch() bridge into JS context (clone so we can access the log later)
+        let fetch_client_clone = fetch_client.clone();
+        inject_fetch_sync(js_engine.context(), fetch_client_clone)?;
 
         // Set window.location
         js_engine.set_global("__PAGE_URL__", url)?;
@@ -1165,6 +1166,15 @@ async fn cmd_spa(
                         }
                     }
                 }
+            }
+        }
+
+        // Log any fetch() calls made during JavaScript execution
+        let fetched_urls = fetch_client.get_fetch_log();
+        if !fetched_urls.is_empty() {
+            println!("\n📡 JavaScript made {} fetch() calls:", fetched_urls.len());
+            for (i, url) in fetched_urls.iter().enumerate() {
+                println!("   {}. {}", i + 1, url);
             }
         }
 

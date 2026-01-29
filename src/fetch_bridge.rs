@@ -17,6 +17,7 @@
 use anyhow::Result;
 use reqwest::blocking::Client;
 use rquickjs::{Context, Function};
+use std::sync::{Arc, Mutex};
 
 /// HTTP client wrapper for fetch bridge
 #[derive(Clone)]
@@ -24,11 +25,13 @@ pub struct FetchClient {
     client: Client,
     cookie_header: String,
     base_url: String,
+    /// Log of all fetched URLs (for debugging/discovery)
+    fetch_log: Arc<Mutex<Vec<String>>>,
 }
 
 impl FetchClient {
     /// Create a new fetch client with optional cookies and base URL
-    #[must_use] 
+    #[must_use]
     pub fn new(cookies: Option<String>, base_url: Option<String>) -> Self {
         Self {
             client: Client::builder()
@@ -37,7 +40,14 @@ impl FetchClient {
                 .unwrap(),
             cookie_header: cookies.unwrap_or_default(),
             base_url: base_url.unwrap_or_default(),
+            fetch_log: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Get the list of all fetched URLs
+    #[must_use] 
+    pub fn get_fetch_log(&self) -> Vec<String> {
+        self.fetch_log.lock().unwrap().clone()
     }
 
     /// Fetch a URL and return the response body as text
@@ -51,6 +61,11 @@ impl FetchClient {
         } else {
             url
         };
+
+        // Log the fetch for discovery
+        if let Ok(mut log) = self.fetch_log.lock() {
+            log.push(full_url.clone());
+        }
 
         let mut request = self.client.get(&full_url);
 
