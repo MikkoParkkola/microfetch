@@ -23,6 +23,7 @@
 
 pub mod analyze;
 pub mod annotate;
+pub mod api_discovery;
 pub mod auth;
 pub mod fetch_bridge;
 pub mod fingerprint;
@@ -50,6 +51,7 @@ pub use websocket::{JsonRpcWebSocket, WebSocket, WebSocketMessage};
 pub use http3_client::Http3Client;
 #[cfg(feature = "http3")]
 pub use http3_client::Http3Response;
+pub use api_discovery::{ApiDiscovery, ApiEndpoint};
 pub use fetch_bridge::{FetchClient, inject_fetch_sync};
 pub use fingerprint::{chrome_profile, firefox_profile, random_profile, safari_profile, BrowserProfile};
 pub use http_client::AcceleratedClient;

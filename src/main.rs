@@ -15,7 +15,7 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use microfetch::{
-    inject_fetch_sync, AcceleratedClient, CookieSource, FetchClient, JsEngine,
+    inject_fetch_sync, AcceleratedClient, ApiDiscovery, CookieSource, FetchClient, JsEngine,
     OnePasswordAuth, OtpRetriever,
 };
 
@@ -886,12 +886,94 @@ async fn cmd_spa(
     // Look for common SPA data patterns
     let mut found_data = false;
 
+    // STEP 0: Try static API discovery first (fastest path ~50ms)
+    // Extract API endpoints from JavaScript without execution
+    let api_discovery = ApiDiscovery::new()?;
+    let discovered_endpoints = api_discovery.discover_from_html(&html);
+
+    if !discovered_endpoints.is_empty() && show_console {
+        println!("\n🔍 Discovered {} API endpoints statically:", discovered_endpoints.len());
+        for (i, endpoint) in discovered_endpoints.iter().take(5).enumerate() {
+            let method_str = endpoint.method.as_deref().unwrap_or("?");
+            println!("   {}. {} {} (from {})", i + 1, method_str, endpoint.url, endpoint.source);
+        }
+        if discovered_endpoints.len() > 5 {
+            println!("   ... and {} more", discovered_endpoints.len() - 5);
+        }
+    }
+
+    // Try fetching discovered endpoints (only GET requests for now)
+    if !discovered_endpoints.is_empty() {
+        // Sort by score (most likely to have useful data first)
+        let mut sorted_endpoints = discovered_endpoints.clone();
+        sorted_endpoints.sort_by_key(|e| -ApiDiscovery::score_endpoint(e));
+
+        // Try top 3 endpoints
+        for endpoint in sorted_endpoints.iter().take(3) {
+            // Only try GET requests automatically
+            if endpoint.method.as_deref() != Some("GET") && endpoint.method.is_some() {
+                continue;
+            }
+
+            // Resolve relative URLs
+            let endpoint_url = if endpoint.url.starts_with("http://") || endpoint.url.starts_with("https://") {
+                endpoint.url.clone()
+            } else if endpoint.url.starts_with('/') {
+                // Use base URL from original request
+                url::Url::parse(url)
+                    .ok().map_or_else(|| endpoint.url.clone(), |u| format!("{}{}", u.origin().unicode_serialization(), endpoint.url))
+            } else {
+                continue; // Skip relative paths without leading /
+            };
+
+            if show_console {
+                println!("🌐 Trying endpoint: {endpoint_url}");
+            }
+
+            // Fetch the endpoint with cookies (ignore errors, continue to next endpoint)
+            let fetch_result = async {
+                let resp = if cookie_header.is_empty() {
+                    client.fetch(&endpoint_url).await?
+                } else {
+                    client
+                        .inner()
+                        .get(&endpoint_url)
+                        .header("Cookie", &cookie_header)
+                        .headers(profile.to_headers())
+                        .send()
+                        .await?
+                };
+
+                let text = resp.text().await?;
+                let data = serde_json::from_str::<serde_json::Value>(&text)?;
+
+                // Check if it looks like useful data (not just error messages)
+                if data.is_object() || data.is_array() {
+                    Ok(data)
+                } else {
+                    Err(anyhow::anyhow!("Not an object or array"))
+                }
+            }.await;
+
+            if let Ok(data) = fetch_result {
+                println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+                println!("\n✅ API endpoint {endpoint_url} returned data:");
+                output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+                found_data = true;
+                break;
+            }
+        }
+    }
+
+    // STEP 1: Try embedded JSON extraction (fast path ~100ms)
     // __NEXT_DATA__ (Next.js)
-    if let Some(data) = extract_script_json(&html, "__NEXT_DATA__") {
-        println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
-        println!("\n✅ __NEXT_DATA__ found:");
-        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
-        found_data = true;
+    if !found_data {
+        if let Some(data) = extract_script_json(&html, "__NEXT_DATA__") {
+            println!("\n📊 Extraction complete in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+            println!("\n✅ __NEXT_DATA__ found:");
+            output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+            found_data = true;
+        }
     }
 
     // __INITIAL_STATE__ (Redux, Vuex)
