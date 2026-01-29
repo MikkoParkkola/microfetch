@@ -22,6 +22,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "hickory-dns",       # DNS caching + Happy Eyeballs (IPv4/6 racing)
     "charset",           # Auto charset detection
     "macos-system-configuration", # macOS proxy detection
+    "blocking",          # Blocking client for auto-update initialization
+    "json",              # JSON support for API responses
 ] }
 
 # HTTP/3 + QUIC (0-RTT connection resumption)
@@ -68,8 +70,10 @@ coset = "0.3"                       # COSE (for WebAuthn)
 # BROWSER FINGERPRINT SPOOFING
 # ═══════════════════════════════════════════════════════════════════════════════
 # fake-useragent removed - we have custom fingerprinting in fingerprint.rs
-rand = "0.8"
-regex = "1"                             # OTP pattern extraction                        # Randomization for fingerprints
+rand = "0.8"                            # Randomization for fingerprints
+regex = "1"                             # OTP pattern extraction
+once_cell = "1.19"                      # Lazy static for version loading
+chrono = { version = "0.4", features = ["serde"] }  # Date/time for version staleness
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ASYNC RUNTIME & UTILITIES

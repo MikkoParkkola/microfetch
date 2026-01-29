@@ -3,11 +3,17 @@
 //! Generates realistic browser fingerprints to avoid detection.
 //! Based on real browser statistics and anti-fingerprinting research.
 
+pub mod autoupdate;
+
 use rand::seq::SliceRandom;
 use rand::Rng;
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, USER_AGENT,
 };
+
+// Load versions once on first use (auto-updates if stale)
+static BROWSER_VERSIONS: std::sync::LazyLock<autoupdate::BrowserVersions> =
+    std::sync::LazyLock::new(autoupdate::BrowserVersions::load_or_update);
 
 /// Browser profile with realistic fingerprint
 #[derive(Debug, Clone)]
@@ -25,24 +31,8 @@ pub struct BrowserProfile {
     pub sec_fetch_user: String,
 }
 
-/// Real Chrome versions from 2024-2025 (high market share)
-const CHROME_VERSIONS: &[(&str, &str)] = &[
-    ("131", "131.0.0.0"),
-    ("130", "130.0.0.0"),
-    ("129", "129.0.0.0"),
-    ("128", "128.0.0.0"),
-    ("127", "127.0.0.0"),
-];
-
-/// Real Firefox versions
-const FIREFOX_VERSIONS: &[&str] = &["133.0", "132.0", "131.0", "130.0"];
-
-/// Real Safari versions
-const SAFARI_VERSIONS: &[(&str, &str)] = &[
-    ("17.6", "605.1.15"),
-    ("17.5", "605.1.15"),
-    ("17.4", "605.1.15"),
-];
+// Browser versions now loaded dynamically via BROWSER_VERSIONS lazy static
+// Auto-updates from official APIs when >30 days old
 
 /// Platform configurations
 #[derive(Debug, Clone, Copy)]
@@ -84,11 +74,11 @@ impl Platform {
 }
 
 /// Generate a realistic Chrome browser profile
-#[must_use] 
+#[must_use]
 pub fn chrome_profile() -> BrowserProfile {
     let mut rng = rand::thread_rng();
     let platform = Platform::random();
-    let (major, full) = CHROME_VERSIONS.choose(&mut rng).unwrap();
+    let (major, full) = BROWSER_VERSIONS.chrome.choose(&mut rng).unwrap();
 
     let user_agent = format!(
         "Mozilla/5.0 ({}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{} Safari/537.36",
@@ -97,9 +87,11 @@ pub fn chrome_profile() -> BrowserProfile {
     );
 
     // Realistic Sec-CH-UA with brand ordering variation
-    let brands = [format!("\"Google Chrome\";v=\"{major}\""),
+    let brands = [
+        format!("\"Google Chrome\";v=\"{major}\""),
         format!("\"Chromium\";v=\"{major}\""),
-        "\"Not_A Brand\";v=\"24\"".to_string()];
+        "\"Not_A Brand\";v=\"24\"".to_string(),
+    ];
 
     BrowserProfile {
         user_agent,
@@ -117,11 +109,11 @@ pub fn chrome_profile() -> BrowserProfile {
 }
 
 /// Generate a realistic Firefox browser profile
-#[must_use] 
+#[must_use]
 pub fn firefox_profile() -> BrowserProfile {
     let mut rng = rand::thread_rng();
     let platform = Platform::random();
-    let version = FIREFOX_VERSIONS.choose(&mut rng).unwrap();
+    let version = BROWSER_VERSIONS.firefox.choose(&mut rng).unwrap();
 
     let user_agent = format!(
         "Mozilla/5.0 ({}; rv:{}) Gecko/20100101 Firefox/{}",
@@ -149,10 +141,10 @@ pub fn firefox_profile() -> BrowserProfile {
 }
 
 /// Generate a realistic Safari browser profile
-#[must_use] 
+#[must_use]
 pub fn safari_profile() -> BrowserProfile {
     let mut rng = rand::thread_rng();
-    let (version, webkit) = SAFARI_VERSIONS.choose(&mut rng).unwrap();
+    let (version, webkit) = BROWSER_VERSIONS.safari.choose(&mut rng).unwrap();
 
     // Safari only runs on macOS/iOS - always use macOS for desktop
     let user_agent = format!(
@@ -176,7 +168,7 @@ pub fn safari_profile() -> BrowserProfile {
 }
 
 /// Generate a random browser profile (weighted by market share)
-#[must_use] 
+#[must_use]
 pub fn random_profile() -> BrowserProfile {
     let mut rng = rand::thread_rng();
     // Realistic distribution: Chrome 65%, Safari 20%, Firefox 10%, Edge 5%
