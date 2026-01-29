@@ -14,7 +14,10 @@ use scraper::{Html, Selector};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-use microfetch::{AcceleratedClient, CookieSource, OnePasswordAuth, OtpRetriever};
+use microfetch::{
+    inject_fetch_sync, AcceleratedClient, CookieSource, FetchClient, JsEngine,
+    OnePasswordAuth, OtpRetriever,
+};
 
 #[derive(Parser)]
 #[command(name = "microfetch")]
@@ -821,9 +824,9 @@ fn truncate_text(text: &str, max: usize) -> String {
 async fn cmd_spa(
     url: &str,
     cookies: Option<&str>,
-    _show_html: bool,
-    _show_console: bool,
-    _wait_ms: u64,
+    show_html: bool,
+    show_console: bool,
+    wait_ms: u64,
     _patterns: Option<&str>,
     output: &str,
     extract_path: Option<&str>,
@@ -922,9 +925,134 @@ async fn cmd_spa(
     }
 
     if !found_data {
-        println!("\n❌ No SPA data found (__NEXT_DATA__, __INITIAL_STATE__, etc.)");
-        println!("   HTML size: {} bytes", html.len());
-        println!("   This may be a server-rendered page or data loads via AJAX.");
+        println!("\n⚙️  No embedded JSON found, trying JavaScript execution...");
+
+        // Extract base URL for resolving relative fetch() calls
+        let base_url = url::Url::parse(url)
+            .ok()
+            .map(|u| u.origin().unicode_serialization())
+            .unwrap_or_default();
+
+        // Create JS engine with fetch() bridge
+        let js_engine = JsEngine::new()?;
+        js_engine.inject_minimal_dom()?;
+
+        // Create fetch client with cookies
+        let fetch_client = FetchClient::new(
+            if cookie_header.is_empty() { None } else { Some(cookie_header.clone()) },
+            if base_url.is_empty() { None } else { Some(base_url.clone()) }
+        );
+
+        // Inject fetch() bridge into JS context
+        inject_fetch_sync(js_engine.context(), fetch_client)?;
+
+        // Set window.location
+        js_engine.set_global("__PAGE_URL__", url)?;
+        js_engine.eval(&format!(
+            "window.location.href = '{url}'; window.location.hostname = '{domain}';"
+        ))?;
+
+        // Extract and execute all <script> tags
+        let document = Html::parse_document(&html);
+        let script_selector = Selector::parse("script").unwrap();
+        let mut scripts_executed = 0;
+
+        for script in document.select(&script_selector) {
+            // Skip external scripts (src attribute) - we can't fetch them yet
+            if script.value().attr("src").is_some() {
+                continue;
+            }
+
+            let script_content = script.text().collect::<String>();
+            if script_content.trim().is_empty() {
+                continue;
+            }
+
+            if show_console {
+                println!("📜 Executing script ({} chars)", script_content.len());
+            }
+
+            // Execute script (ignore errors - some scripts may fail without full browser API)
+            if let Err(e) = js_engine.eval(&script_content) {
+                if show_console {
+                    println!("⚠️  Script execution error: {e}");
+                }
+            } else {
+                scripts_executed += 1;
+            }
+        }
+
+        println!("✅ Executed {scripts_executed} inline scripts");
+
+        // Wait for async operations (setTimeout, fetch calls, etc.)
+        if wait_ms > 0 {
+            println!("⏳ Waiting {wait_ms}ms for async operations...");
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        }
+
+        // Try to extract data from window object
+        // Check common SPA data locations in the JS runtime
+        let patterns_to_check = vec![
+            ("window.__NEXT_DATA__", "__NEXT_DATA__"),
+            ("window.__INITIAL_STATE__", "__INITIAL_STATE__"),
+            ("window.__NUXT__", "__NUXT__"),
+            ("window.__PRELOADED_STATE__", "__PRELOADED_STATE__"),
+        ];
+
+        for (js_path, name) in patterns_to_check {
+            if let Ok(json_str) = js_engine.eval(&format!("JSON.stringify({js_path} || null)")) {
+                if json_str != "null" {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        println!("\n✅ {name} found via JavaScript execution:");
+                        output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+                        found_data = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If still no data, try extracting entire window object
+        if !found_data {
+            if let Ok(window_json) = js_engine.eval("JSON.stringify(window)") {
+                if let Ok(window_data) = serde_json::from_str::<serde_json::Value>(&window_json) {
+                    // Filter out DOM and built-in objects
+                    if let Some(obj) = window_data.as_object() {
+                        let mut clean_data = serde_json::Map::new();
+                        for (key, value) in obj {
+                            // Skip known browser APIs and our shims
+                            if !key.starts_with('_') &&
+                               key != "document" &&
+                               key != "window" &&
+                               key != "console" &&
+                               key != "navigator" &&
+                               key != "location" &&
+                               key != "localStorage" &&
+                               key != "sessionStorage" {
+                                clean_data.insert(key.clone(), value.clone());
+                            }
+                        }
+
+                        if !clean_data.is_empty() {
+                            println!("\n✅ Extracted window data via JavaScript:");
+                            let data = serde_json::Value::Object(clean_data);
+                            output_spa_data(&data, output, extract_path, summary, minify, max_array, max_depth)?;
+                            found_data = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found_data {
+            println!("\n❌ No SPA data found even after JavaScript execution");
+            println!("   HTML size: {} bytes", html.len());
+            println!("   Scripts executed: {scripts_executed}");
+            if show_html {
+                println!("\nHTML preview (first 500 chars):");
+                println!("{}", &html.chars().take(500).collect::<String>());
+            }
+        }
     }
 
     Ok(())

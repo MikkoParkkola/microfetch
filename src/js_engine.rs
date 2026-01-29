@@ -217,6 +217,13 @@ impl JsEngine {
         let code = format!("JSON.parse('{}')", json_str.replace('\'', "\\'"));
         self.eval(&code)
     }
+
+    /// Get reference to the underlying `QuickJS` context
+    /// Used for injecting native functions like `fetch()`
+    #[must_use] 
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
 }
 
 impl Default for JsEngine {
