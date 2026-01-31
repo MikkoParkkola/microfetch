@@ -83,10 +83,18 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create checksums
+      - name: Prepare release files
         run: |
-          cd artifacts
-          find . -type f -name 'nab-*' -exec mv {} . \;
+          mkdir -p release
+          # Each artifact is in a subdirectory with the same name
+          # Structure: artifacts/nab-target/nab-target[.exe]
+          for dir in artifacts/nab-*/; do
+            if [ -d "$dir" ]; then
+              cp "$dir"/* release/ 2>/dev/null || true
+            fi
+          done
+          cd release
+          ls -la
           sha256sum nab-* > checksums-sha256.txt
           cat checksums-sha256.txt
 
@@ -95,5 +103,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/nab-*
-            artifacts/checksums-sha256.txt
+            release/nab-*
+            release/checksums-sha256.txt
