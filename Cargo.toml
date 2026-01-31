@@ -1,10 +1,21 @@
 [package]
 name = "microfetch"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Ultra-minimal browser engine with JS support, HTTP/3, cookie auth, passkeys, and anti-fingerprinting"
 license = "MIT"
 rust-version = "1.93"
+repository = "https://github.com/MikkoParkkola/microfetch"
+homepage = "https://github.com/MikkoParkkola/microfetch"
+documentation = "https://docs.rs/microfetch"
+readme = "README.md"
+keywords = ["http", "fetch", "browser", "cookies", "markdown"]
+categories = ["web-programming::http-client", "command-line-utilities"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "bin"
 
 [dependencies]
 # ═══════════════════════════════════════════════════════════════════════════════
