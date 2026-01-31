@@ -100,7 +100,7 @@ fn detect_macos_default_browser() -> Result<BrowserType> {
 fn detect_linux_default_browser() -> Result<BrowserType> {
     // Try xdg-settings first
     let output = Command::new("xdg-settings")
-        .args(&["get", "default-web-browser"])
+        .args(["get", "default-web-browser"])
         .output();
 
     if let Ok(output) = output {
@@ -128,7 +128,7 @@ fn detect_windows_default_browser() -> Result<BrowserType> {
     // Try to read from Windows Registry
     // HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice
     let output = Command::new("reg")
-        .args(&[
+        .args([
             "query",
             r"HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
             "/v",
