@@ -24,6 +24,7 @@
 pub mod analyze;
 pub mod annotate;
 pub mod api_discovery;
+pub mod arena;
 pub mod auth;
 pub mod browser_detect;
 pub mod fetch_bridge;

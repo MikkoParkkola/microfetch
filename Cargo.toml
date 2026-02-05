@@ -150,10 +150,9 @@ required-features = ["cli"]
 name = "nab-mcp"
 path = "src/bin/mcp_server.rs"
 
-# Benchmarks disabled until core functionality validated
-# [[bench]]
-# name = "fetch_benchmark"
-# harness = false
+[[bench]]
+name = "arena_benchmark"
+harness = false
 
 [profile.release]
 lto = true
