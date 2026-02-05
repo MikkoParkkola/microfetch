@@ -47,6 +47,7 @@ pub use annotate::{
     SubtitleEntry, SubtitleFormat, TranscriptionConfig,
 };
 pub use api_discovery::{ApiDiscovery, ApiEndpoint};
+pub use arena::{ArenaResponse, ResponseArena, ResponseBuffer, StringInterner};
 pub use auth::{
     CookieSource, Credential, CredentialRetriever, CredentialSource, OnePasswordAuth, OtpCode,
     OtpRetriever, OtpSource,

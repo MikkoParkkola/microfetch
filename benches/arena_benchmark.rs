@@ -1,9 +1,9 @@
-//! Benchmarks comparing arena allocator vs standard allocation
+//! Benchmarks comparing bumpalo arena allocator vs standard allocation
 //!
 //! Run with: `cargo bench --bench arena_benchmark`
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
-use nab::arena::{Arena, ResponseBuffer};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use nab::arena::{ArenaResponse, ResponseArena, ResponseBuffer, StringInterner};
 
 /// Simulate typical HTTP response headers (10 headers, ~500 bytes)
 const TYPICAL_HEADERS: &[&str] = &[
@@ -54,9 +54,9 @@ fn bench_headers_arena(c: &mut Criterion) {
     for size in [10, 50, 100].iter() {
         group.throughput(Throughput::Elements(*size as u64));
 
-        group.bench_with_input(BenchmarkId::new("arena", size), size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("bumpalo_arena", size), size, |b, &size| {
             b.iter(|| {
-                let arena = Arena::new();
+                let arena = ResponseArena::new();
                 let mut buffer = ResponseBuffer::new(&arena);
 
                 for _ in 0..size {
@@ -95,19 +95,23 @@ fn bench_html_buffering(c: &mut Criterion) {
     for size in [10, 100, 1000].iter() {
         group.throughput(Throughput::Elements(*size as u64));
 
-        group.bench_with_input(BenchmarkId::new("arena", size), size, |b, &size| {
-            b.iter(|| {
-                let arena = Arena::new();
-                let mut buffer = ResponseBuffer::new(&arena);
+        group.bench_with_input(
+            BenchmarkId::new("bumpalo_arena", size),
+            size,
+            |b, &size| {
+                b.iter(|| {
+                    let arena = ResponseArena::new();
+                    let mut buffer = ResponseBuffer::new(&arena);
 
-                for i in 0..size {
-                    let chunk = HTML_CHUNKS[i % HTML_CHUNKS.len()];
-                    buffer.push_str(black_box(chunk));
-                }
+                    for i in 0..size {
+                        let chunk = HTML_CHUNKS[i % HTML_CHUNKS.len()];
+                        buffer.push_str(black_box(chunk));
+                    }
 
-                black_box(buffer.as_str())
-            });
-        });
+                    black_box(buffer.as_str())
+                });
+            },
+        );
 
         group.bench_with_input(BenchmarkId::new("vec", size), size, |b, &size| {
             b.iter(|| {
@@ -145,19 +149,23 @@ fn bench_markdown_conversion(c: &mut Criterion) {
     for size in [10, 100, 500].iter() {
         group.throughput(Throughput::Elements(*size as u64));
 
-        group.bench_with_input(BenchmarkId::new("arena", size), size, |b, &size| {
-            b.iter(|| {
-                let arena = Arena::new();
-                let mut buffer = ResponseBuffer::new(&arena);
+        group.bench_with_input(
+            BenchmarkId::new("bumpalo_arena", size),
+            size,
+            |b, &size| {
+                b.iter(|| {
+                    let arena = ResponseArena::new();
+                    let mut buffer = ResponseBuffer::new(&arena);
 
-                for i in 0..size {
-                    let chunk = MARKDOWN_CHUNKS[i % MARKDOWN_CHUNKS.len()];
-                    buffer.push_str(black_box(chunk));
-                }
+                    for i in 0..size {
+                        let chunk = MARKDOWN_CHUNKS[i % MARKDOWN_CHUNKS.len()];
+                        buffer.push_str(black_box(chunk));
+                    }
 
-                black_box(buffer.as_str())
-            });
-        });
+                    black_box(buffer.as_str())
+                });
+            },
+        );
 
         group.bench_with_input(BenchmarkId::new("vec", size), size, |b, &size| {
             b.iter(|| {
@@ -177,9 +185,11 @@ fn bench_markdown_conversion(c: &mut Criterion) {
 }
 
 fn bench_realistic_response(c: &mut Criterion) {
-    c.bench_function("realistic_response_arena", |b| {
+    let mut group = c.benchmark_group("realistic_response");
+
+    group.bench_function("bumpalo_arena", |b| {
         b.iter(|| {
-            let arena = Arena::new();
+            let arena = ResponseArena::new();
             let mut buffer = ResponseBuffer::new(&arena);
 
             // Headers
@@ -200,7 +210,7 @@ fn bench_realistic_response(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("realistic_response_vec", |b| {
+    group.bench_function("vec", |b| {
         b.iter(|| {
             let mut parts = Vec::new();
 
@@ -221,6 +231,8 @@ fn bench_realistic_response(c: &mut Criterion) {
             black_box(parts.concat())
         });
     });
+
+    group.finish();
 }
 
 fn bench_large_response(c: &mut Criterion) {
@@ -228,9 +240,9 @@ fn bench_large_response(c: &mut Criterion) {
     group.sample_size(20); // Fewer samples for large benchmarks
 
     // Simulate 1MB response
-    group.bench_function("arena_1mb", |b| {
+    group.bench_function("bumpalo_arena_1mb", |b| {
         b.iter(|| {
-            let arena = Arena::new();
+            let arena = ResponseArena::new();
             let mut buffer = ResponseBuffer::new(&arena);
 
             for _ in 0..10_000 {
@@ -261,8 +273,8 @@ fn bench_large_response(c: &mut Criterion) {
 }
 
 fn bench_arena_reuse(c: &mut Criterion) {
-    c.bench_function("arena_reuse", |b| {
-        let mut arena = Arena::new();
+    c.bench_function("bumpalo_arena_reuse", |b| {
+        let mut arena = ResponseArena::new();
 
         b.iter(|| {
             let mut buffer = ResponseBuffer::new(&arena);
@@ -273,7 +285,7 @@ fn bench_arena_reuse(c: &mut Criterion) {
 
             let result = black_box(buffer.as_str());
 
-            // Reset for reuse
+            // Reset for reuse (zero-cost with bumpalo)
             arena.reset();
 
             result
@@ -285,9 +297,9 @@ fn bench_small_allocations(c: &mut Criterion) {
     let mut group = c.benchmark_group("small_allocations");
 
     // Simulate many tiny strings (common in header parsing)
-    group.bench_function("arena_many_small", |b| {
+    group.bench_function("bumpalo_arena_many_small", |b| {
         b.iter(|| {
-            let arena = Arena::new();
+            let arena = ResponseArena::new();
             let mut buffer = ResponseBuffer::with_capacity(&arena, 1000);
 
             for i in 0..1000 {
@@ -314,6 +326,116 @@ fn bench_small_allocations(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_arena_response(c: &mut Criterion) {
+    let mut group = c.benchmark_group("arena_response");
+
+    group.bench_function("arena_response_building", |b| {
+        b.iter(|| {
+            let arena = ResponseArena::new();
+            let mut response = ArenaResponse::new(&arena);
+
+            // Status line
+            response.set_status(&arena, 200, "OK");
+
+            // Headers (10 typical headers)
+            for header in TYPICAL_HEADERS {
+                let parts: Vec<&str> = header.split(": ").collect();
+                if parts.len() == 2 {
+                    response.add_header(&arena, parts[0], parts[1]);
+                }
+            }
+
+            // Body chunks
+            for chunk in HTML_CHUNKS {
+                response.add_body_chunk(&arena, chunk.as_bytes());
+            }
+
+            black_box(response.body_text())
+        });
+    });
+
+    group.bench_function("standard_response_building", |b| {
+        #[derive(Debug)]
+        struct StandardResponse {
+            status: u16,
+            status_text: String,
+            headers: Vec<(String, String)>,
+            body_chunks: Vec<Vec<u8>>,
+        }
+
+        b.iter(|| {
+            let mut response = StandardResponse {
+                status: 200,
+                status_text: "OK".to_string(),
+                headers: Vec::with_capacity(20),
+                body_chunks: Vec::with_capacity(10),
+            };
+
+            // Headers
+            for header in TYPICAL_HEADERS {
+                let parts: Vec<&str> = header.split(": ").collect();
+                if parts.len() == 2 {
+                    response
+                        .headers
+                        .push((parts[0].to_string(), parts[1].to_string()));
+                }
+            }
+
+            // Body chunks
+            for chunk in HTML_CHUNKS {
+                response.body_chunks.push(chunk.as_bytes().to_vec());
+            }
+
+            // Concatenate body
+            let body: Vec<u8> = response
+                .body_chunks
+                .iter()
+                .flat_map(|c| c.iter().copied())
+                .collect();
+
+            black_box(String::from_utf8(body).ok())
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_string_interning(c: &mut Criterion) {
+    let mut group = c.benchmark_group("string_interning");
+
+    group.bench_function("with_interning", |b| {
+        let arena = ResponseArena::new();
+        let interner = StringInterner::new();
+        let mut response = ArenaResponse::new(&arena);
+
+        b.iter(|| {
+            // Common header names benefit from interning
+            response.add_header_interned(&arena, &interner, "content-type", "text/html");
+            response.add_header_interned(&arena, &interner, "server", "nginx");
+            response.add_header_interned(&arena, &interner, "cache-control", "max-age=3600");
+            response.add_header_interned(&arena, &interner, "x-custom", "value");
+
+            black_box(&response)
+        });
+    });
+
+    group.bench_function("without_interning", |b| {
+        let arena = ResponseArena::new();
+        let mut response = ArenaResponse::new(&arena);
+
+        b.iter(|| {
+            response.add_header(&arena, "content-type", "text/html");
+            response.add_header(&arena, "server", "nginx");
+            response.add_header(&arena, "cache-control", "max-age=3600");
+            response.add_header(&arena, "x-custom", "value");
+
+            black_box(&response)
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_headers_arena,
@@ -323,6 +445,8 @@ criterion_group!(
     bench_large_response,
     bench_arena_reuse,
     bench_small_allocations,
+    bench_arena_response,
+    bench_string_interning,
 );
 
 criterion_main!(benches);
