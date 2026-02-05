@@ -24,6 +24,10 @@ use nab::{
 #[command(about = "Token-optimized HTTP client with SPA extraction")]
 #[command(version)]
 struct Cli {
+    /// Enable verbose debug logging
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -330,14 +334,17 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
+    let cli = Cli::parse();
+
+    // Initialize logging based on --verbose flag
+    let log_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+
     FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(log_level)
         .with_target(false)
         .compact()
         .init();
 
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Fetch {

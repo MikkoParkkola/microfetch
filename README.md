@@ -132,7 +132,7 @@ nab fetch https://api.example.com/data \
 
 **Cookie Troubleshooting**:
 - Check browser selection: `nab fetch URL --cookies brave`
-- Debug cookie detection: `RUST_LOG=debug nab fetch URL`
+- Debug cookie detection: `nab --verbose fetch URL`
 - Ensure browser is running or has recent session
 - macOS has best browser support (Dia, Brave, Chrome, Firefox, Safari, Edge)
 
@@ -282,7 +282,7 @@ cargo build --no-default-features --features cli
 ### Cookie Detection Not Working?
 1. Verify browser: `nab fetch URL --cookies brave` (try different browsers)
 2. Check browser is running or has recent session
-3. Enable debug logging: `RUST_LOG=debug nab fetch URL`
+3. Enable debug logging: `nab --verbose fetch URL`
 4. macOS has broadest support (Dia, Brave, Chrome, Firefox, Safari, Edge)
 5. Use `--1password` as fallback for credential auth
 
@@ -295,10 +295,10 @@ cargo build --no-default-features --features cli
 ### Debug Output
 ```bash
 # See detailed request/response info
-RUST_LOG=debug nab fetch https://example.com
+nab --verbose fetch https://example.com
 
 # Trace-level for maximum detail
-RUST_LOG=trace nab fetch https://example.com
+RUST_LOG=nab=trace nab fetch https://example.com
 ```
 
 ### Performance Tuning
